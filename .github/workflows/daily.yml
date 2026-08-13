@@ -2,11 +2,8 @@ name: Download and Update Código Fonte da Calculadora da Reforma Tributária
 
 on:
   schedule:
-    - cron: "17 3 * * *" # Runs every day at 3:17 AM UTC
+    - cron: "17 0 * * *" # Runs every day at 0:17 AM UTC
       timezone: "UTC"
-
-    # - cron: "17 6 * * *" # Runs every day at 6:17 AM UTC
-      # timezone: "UTC"
 
   workflow_dispatch: # Allows manual triggering of the workflow
 
@@ -25,7 +22,7 @@ jobs:
       - name: Get download URL from API
         id: get_url
         run: |
-          DOWNLOAD_URL=$(curl -s "https://calculadora-rtc-download.joaopedro-c3b.workers.dev" | jq -r '.downloadUrl')
+          DOWNLOAD_URL=$(curl -s "https://piloto-cbs.tributos.gov.br/servico/calculadora-consumo/api/calculadora/download/url?platform=default" | jq -r '.downloadUrl')
           if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
             echo "::error::A API não retornou uma URL de download válida. Resposta: $DOWNLOAD_URL"
             exit 1
