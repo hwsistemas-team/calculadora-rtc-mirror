@@ -82,58 +82,8 @@ jobs:
             echo "is_new_version=false" >> $GITHUB_ENV
           fi
 
-      - name: Resolve tag name
-        id: resolve_tag
-        if: env.is_new_version == 'true'
-        run: |
-          SOURCE_ZIP="${{ steps.check_version.outputs.source_zip }}"
-
-          # Extract only the Flyway migration folder to a temp location to read version
-          TMP_EXTRACT=$(mktemp -d)
-          unzip -q "$SOURCE_ZIP" "flyway/sql/manutencao/*" -d "$TMP_EXTRACT" 2>/dev/null || \
-            unzip -q "$SOURCE_ZIP" "*/flyway/sql/manutencao/*" -d "$TMP_EXTRACT" 2>/dev/null || true
-
-          # Find the highest migration file version (VNNNN_...)
-          MIGRATION_FILE=$(find "$TMP_EXTRACT" -type f -name "V[0-9][0-9][0-9][0-9]_*" | sort | tail -n 1)
-          echo "Latest migration file: $MIGRATION_FILE"
-
-          if [ -n "$MIGRATION_FILE" ]; then
-            # Extract NNNN from the filename (4-digit number after V)
-            BASENAME=$(basename "$MIGRATION_FILE")
-            VERSION_NUM=$(echo "$BASENAME" | grep -oP '(?<=V)\d{4}')
-            SHORT_TAG="v${VERSION_NUM}"
-          else
-            echo "::warning::No Flyway migration file found; falling back to date-based tag."
-            SHORT_TAG="v$(date +'%Y%m%d')"
-          fi
-
-          echo "Short tag candidate: $SHORT_TAG"
-
-          # Check whether the short tag already exists in the remote
-          git fetch --tags --quiet
-          if git rev-parse "refs/tags/$SHORT_TAG" >/dev/null 2>&1; then
-            echo "Tag $SHORT_TAG already exists. Building long tag."
-
-            # Use the modification date of codigo-fonte-backend.zip captured after extraction
-            ISO_DATE="${{ steps.check_version.outputs.source_zip_date }}"
-
-            if [ -z "$ISO_DATE" ]; then
-              # Fallback já gerando no formato seguro com hifens
-              SAFE_DATE=$(date +'%Y-%m-%dT%H-%M-%S')
-            else
-              # Sanitiza a data recebida substituindo ':' por '-' usando string replacement do bash
-              SAFE_DATE="${ISO_DATE//:/-}"
-            fi
-
-            TAG_NAME="${SHORT_TAG}-${SAFE_DATE}"
-          else
-            TAG_NAME="$SHORT_TAG"
-          fi
-
-          echo "Final tag name: $TAG_NAME"
-          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
-
       - name: Extract and validate database from Docker image
+        id: database
         if: env.is_new_version == 'true'
         shell: bash
         run: |
@@ -159,6 +109,8 @@ jobs:
           tar -xOzf "${IMAGE_ARCHIVES[0]}" "${DATABASE_PATHS[0]}" > calculadora-pro.db
 
           python - <<'PY'
+          import os
+          import re
           import sqlite3
 
           connection = sqlite3.connect("file:calculadora-pro.db?mode=ro", uri=True)
@@ -166,11 +118,54 @@ jobs:
               result = connection.execute("PRAGMA quick_check").fetchone()
               if result != ("ok",):
                   raise SystemExit(f"SQLite quick_check falhou: {result!r}")
+
+              row = connection.execute(
+                  "SELECT VRBD_VERSAO_BASE_DADO FROM VERSAO_BASE_DADO "
+                  "ORDER BY VRBD_ID DESC LIMIT 1"
+              ).fetchone()
+              if row is None or not isinstance(row[0], str) or not re.fullmatch(r"V[0-9]{4}", row[0]):
+                  raise SystemExit(f"Versão inválida em VERSAO_BASE_DADO: {row!r}")
+
+              short_tag = "v" + row[0][1:]
+              print(f"Versão do banco: {short_tag}")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  print(f"short_tag={short_tag}", file=output)
           finally:
               connection.close()
           PY
 
           zip -q calculadora-pro.db.zip calculadora-pro.db
+
+      - name: Resolve tag name
+        id: resolve_tag
+        if: env.is_new_version == 'true'
+        run: |
+          SHORT_TAG="${{ steps.database.outputs.short_tag }}"
+          echo "Short tag candidate: $SHORT_TAG"
+
+          # Check whether the short tag already exists in the remote
+          git fetch --tags --quiet
+          if git rev-parse "refs/tags/$SHORT_TAG" >/dev/null 2>&1; then
+            echo "Tag $SHORT_TAG already exists. Building long tag."
+
+            # Use the modification date of codigo-fonte-backend.zip captured after extraction
+            ISO_DATE="${{ steps.check_version.outputs.source_zip_date }}"
+
+            if [ -z "$ISO_DATE" ]; then
+              # Fallback já gerando no formato seguro com hifens
+              SAFE_DATE=$(date +'%Y-%m-%dT%H-%M-%S')
+            else
+              # Sanitiza a data recebida substituindo ':' por '-' usando string replacement do bash
+              SAFE_DATE="${ISO_DATE//:/-}"
+            fi
+
+            TAG_NAME="${SHORT_TAG}-${SAFE_DATE}"
+          else
+            TAG_NAME="$SHORT_TAG"
+          fi
+
+          echo "Final tag name: $TAG_NAME"
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
 
       - name: Unzip and commit if new version
         if: env.is_new_version == 'true'
